@@ -4,12 +4,14 @@ import pandas as pd
 from scipy.io import loadmat
 import matplotlib.pyplot as plt
 from rqpy import HAS_SCDMSPYTOOLS
+import h5py
+import ast
 
 if HAS_SCDMSPYTOOLS:
     from scdmsPyTools.BatTools.IO import getRawEvents, getDetectorSettings
 
 
-__all__ = ["getrandevents", "get_trace_gain", "get_traces_midgz", "get_traces_npz", "loadstanfordfile"]
+__all__ = ["getrandevents", "get_trace_gain", "get_traces_midgz", "get_traces_npz", "loadstanfordfile", "load_NW_file"]
 
 
 def getrandevents(basepath, evtnums, seriesnums, cut=None, channels=["PDS1"], det="Z1", sumchans=False, 
@@ -543,6 +545,19 @@ def loadstanfordfile(f, convtoamps=1/1024, lgcfullrtn=False):
         return traces, times, fs, ttl, data
     else:
         return traces, times, fs, ttl
+    
+#First draft of adding in Northwestern AnimalADR compatibility    
+def load_NW_file(f, nevts = 1):
+    #f: file(s)
+    #nevts: number of segments to split each files trace into
+    
+    data = _getChannelscont_NW(f, nevts=nevts)
+    fs = data["Fs"]
+    #times not defined for NW
+    traces = np.stack((data["CH2"],data["CH3"]), axis=1) #Add in amp convert?
+    trigger = data["CH1"] #Add in amp convert?
+    
+    return traces, fs, trigger
         
 def _getchannels_singlefile(filename):
     """
@@ -681,4 +696,222 @@ def _getchannels(filelist):
         
         combined['filenum']=len(filelist)
         
+        return combined
+
+def _getChannelsSingleFileRandom_NW(filename,nevts = 200, pretrig = 1000,  verbose=False):
+    '''
+    This function takes data from continuous DAQ, where each file contains 1 sec of data
+    It evenly slices the 1sec of data into nevts events
+    nevts defaults to 200, meaning each trace is 5 msecs
+    '''
+    if(verbose):
+        print('Loading',filename)
+    #mat_data=loadmat(filename,squeeze_me=False)
+    fdata = h5py.File(filename, 'r')
+    metadata_str=fdata['metadata']['metadata']
+    data=fdata['traces']['traces']
+
+    metadata = ast.literal_eval(metadata_str[0])
+    sample_rate = float(metadata['sample_rate'])
+    number_channels = len(metadata['Rb'])
+    Rfb = np.array(metadata['Rfb']).astype(np.float)
+    TR = np.array(metadata['TR']).astype(np.float)
+    Amp = np.array(metadata['Amp']).astype(np.float)
+    SF = np.array(metadata['SF']).astype(np.float)
+    Gains = Amp * SF
+    dVdI = Rfb * TR * Amp * SF  # Current in the unit of uA
+    dIdV = np.ones(number_channels) / Rfb / TR / Amp / SF # Current
+    chan_ind = metadata['chan_ind']
+
+    # First reshape data into the shape of n_chan x 1 second of samples
+    # further slicing into events need to happen
+    data = np.reshape(data,(number_channels,int(sample_rate)))*dIdV[:,None]
+
+    res = {}
+    chan_names = []
+    for ich in range(4):
+        if (chan_ind[ich] >= 0):
+            ch_str = 'CH%d'%(ich+1)
+            chan_names.append(ch_str)
+            res[ch_str] = data[chan_ind[ich]].reshape(nevts,int(sample_rate/nevts))
+
+    trigger_points = np.arange(nevts)* int(sample_rate / nevts) + pretrig
+
+    chan_names = np.array(chan_names)
+
+
+    Fs = sample_rate
+
+    chanNum=number_channels
+
+    res['Total'] = np.empty_like(res[chan_names[0]])
+    res['Total'].fill(0)
+
+    for count in range(0,len(chan_names)):
+        #if chan_names[count] == 'trig': continue
+        if (chan_names[count] == 'CH2') :
+            res['Total'] = res['Total'] + res[chan_names[count]]
+        if (chan_names[count] == 'CH3'):
+            res['Total'] = res['Total'] + res[chan_names[count]]*1.6
+
+    res['dVdI']=dVdI
+    res['Fs']=Fs
+    res['prop']=metadata
+    res['filenum']=1
+    chan_names = np.append(chan_names,'Total')
+    res['chan_names'] = chan_names
+    res['trigpt'] = trigger_points
+    res['filename'] =  [filename] * nevts
+    res['filename'] = np.array(res['filename'])
+
+    return res
+
+def _getChannelsSingleFileLevelTrig_NW(filename, trig_ch = 0, trig_th = 2.0, trig_edge = 1,  #trig_edge = 1 (rising edge) or 0 (falling edge) not yet implemented
+       pretrig = 1000, trace_len = 5000, trig_sep = 4096, verbose=False):
+    '''
+    This function takes data from continuous DAQ, where each file contains 1 sec of data
+    It slices the 1sec of data into events with a level trigger
+    '''
+    if(verbose):
+        print('Loading',filename)
+    # print (trig_ch, trig_th, trig_edge, pretrig, trace_len, trig_sep)
+    #mat_data=loadmat(filename,squeeze_me=False)
+    fdata = h5py.File(filename, 'r')
+    metadata_str=fdata['metadata']['metadata']
+    data=fdata['traces']['traces']
+
+    metadata = ast.literal_eval(metadata_str[0])
+    sample_rate = float(metadata['sample_rate'])
+    number_channels = len(metadata['Rb'])
+    Rfb = np.array(metadata['Rfb']).astype(np.float)
+    TR = np.array(metadata['TR']).astype(np.float)
+    Amp = np.array(metadata['Amp']).astype(np.float)
+    SF = np.array(metadata['SF']).astype(np.float)
+    Gains = Amp * SF
+    dVdI = Rfb * TR * Amp * SF  # Current in the unit of uA
+    dIdV = np.ones(number_channels) / Rfb / TR / Amp / SF # Current
+    chan_ind = metadata['chan_ind']
+
+    # print (dIdV)
+
+    # First reshape data into the shape of n_chan x 1 second of samples
+    # further slicing into events need to happen
+    data = np.reshape(data,(number_channels,int(sample_rate)))*dIdV[:,None]
+    # print (data[0][0:1000])
+    trigger_points=  np.flatnonzero((data[trig_ch][pretrig:-(1+trace_len - pretrig)] > trig_th)
+                                           & (data[trig_ch][pretrig+1:-(trace_len - pretrig)] < trig_th))+1
+    rm_index = []
+    n_trig = len(trigger_points)
+    idx = 0
+    while (idx < n_trig-2):
+        nidx = idx + 1
+        #    print (nidx, idx)
+        while ( (nidx< n_trig) and ((trigger_points[nidx] - trigger_points[idx])< trig_sep) ):
+            rm_index.append(nidx)
+            nidx += 1
+        idx = nidx
+    rm_index = np.array(rm_index)
+    trigger_points = np.delete(trigger_points, rm_index)
+    trigger_points += pretrig
+
+    res = {}
+    chan_names = []
+    for ich in range(4):
+        if (chan_ind[ich] >= 0):
+            ch_str = 'CH%d'%(ich+1)
+            chan_names.append(ch_str)
+    chan_names = np.array(chan_names)
+    for ich, ch_str in enumerate(chan_names):
+        res[ch_str] = []
+        for trigpt in trigger_points:
+            res[ch_str].append(data[ich][trigpt - pretrig:trigpt+trace_len-pretrig])
+        res[ch_str] = np.array(res[ch_str])
+
+    res['trigpt'] = trigger_points
+    res['filename'] =  [filename] * n_trig
+    res['filename'] = np.array(res['filename'])
+
+    Fs = sample_rate
+
+    chanNum=number_channels
+
+    res['Total'] = np.empty_like(res[chan_names[0]])
+    res['Total'].fill(0)
+
+    for count in range(0,len(chan_names)):
+        #if chan_names[count] == 'trig': continue
+        if (chan_names[count] == 'CH2') or (chan_names[count] == 'CH3'):
+            res['Total'] = res['Total'] + res[chan_names[count]]
+
+    res['dVdI']=dVdI
+    res['Fs']=Fs
+    res['prop']=metadata
+    res['filenum']=1
+    chan_names = np.append(chan_names,'Total')
+    res['chan_names'] = chan_names
+
+    return res
+
+def _getChannelscont_NW(filelist, trig=False, nevts = 200,
+        trig_ch = 0, trig_th = 40000, trig_edge = 1,  #trig_edge = 1 (rising edge) or 0 (falling edge)
+        pretrig = 1000, trace_len = 5000, trig_sep = 4096,
+        verbose=False):
+
+    if(type(filelist) == str):
+        if (trig):
+            return _getChannelsSingleFileLevelTrig_NW(filelist,
+                    trig_ch = trig_ch, trig_th = trig_th, trig_edge = trig_edge,
+                    pretrig = pretrig, trace_len = trace_len, trig_sep = trig_sep,
+                    verbose=verbose)
+        else:
+            return _getChannelsSingleFileRandom_NW(filelist, nevts = nevts, verbose=verbose)
+    else:
+        filelist.sort()
+
+        combined = dict()
+        if (trig):
+            res1=_getChannelsSingleFileLevelTrig_NW(filelist[0],
+                    trig_ch = trig_ch, trig_th = trig_th, trig_edge = trig_edge,
+                    pretrig = pretrig, trace_len = trace_len, trig_sep = trig_sep,
+                    verbose=verbose)
+        else:
+            res1=_getChannelsSingleFileRandom_NW(filelist[0], nevts = nevts, verbose=verbose)
+        chan_names = res1['chan_names']
+        for chan in range(0,len(chan_names)):
+            combined[chan_names[chan]] = [res1[chan_names[chan]]]
+
+        combined['dVdI']=res1['dVdI']
+        combined['Fs']=res1['Fs']
+        combined['prop']=res1['prop']
+        # combined['time']=[res1['time']]
+        combined['chan_names'] = res1['chan_names']
+        combined['trigpt'] = [res1['trigpt']]
+        combined['filename'] = [res1['filename']]
+
+        for count in range(1,len(filelist)):
+            # try:
+                if (trig):
+                    res=_getChannelsSingleFileLevelTrig_NW(filelist[count],
+                            trig_ch = trig_ch, trig_th = trig_th, trig_edge = trig_edge,
+                            pretrig = pretrig, trace_len = trace_len, trig_sep = trig_sep,
+                            verbose=verbose)
+                else:
+                    res=_getChannelsSingleFileRandom_NW(filelist[count], nevts = nevts, verbose=verbose)
+                for chan in range(0,len(chan_names)):
+                    combined[chan_names[chan]].append(res[chan_names[chan]])
+                combined['trigpt'].append(res['trigpt'])
+                combined['filename'].append(res['filename'])
+                # combined['time'].append(res['time'])
+            # except:
+            #     print('Skipping ' + filelist[count])
+        # print (combined)
+
+        for chan in range(0,len(chan_names)):
+            combined[chan_names[chan]] = np.concatenate(combined[chan_names[chan]])
+
+        combined['trigpt']=np.concatenate(combined['trigpt'])
+        combined['filename']=np.concatenate(combined['filename'])
+
+        combined['filenum']=len(filelist)
+
         return combined

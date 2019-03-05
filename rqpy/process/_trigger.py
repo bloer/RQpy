@@ -472,6 +472,7 @@ class OptimumFilt(object):
         self.trigtypes = trigtypes
         
 
+#Added NW functionality
 def acquire_randoms(filelist, n, l, datashape=None, iotype="stanford", savepath=None, 
                     savename=None, dumpnum=1, maxevts=1000):
     """
@@ -528,6 +529,9 @@ def acquire_randoms(filelist, n, l, datashape=None, iotype="stanford", savepath=
         if iotype=="stanford":
             traces = io.loadstanfordfile(filelist[0])[0]
             datashape = (traces.shape[0], traces.shape[-1])
+        elif iotype=="northwestern":
+            traces = io.load_NW_file(filelist[0])[0]
+            datashape = (traces.shape[0], traces.shape[-1])
         else:
             raise ValueError("Unrecognized iotype inputted.")
     
@@ -546,6 +550,9 @@ def acquire_randoms(filelist, n, l, datashape=None, iotype="stanford", savepath=
 
         if iotype=="stanford":
             traces, t, fs, _ = io.loadstanfordfile(filelist[key])
+        elif iotype=="northwestern":
+            traces, fs, _ = io.load_NW_file(filelist[key])
+            t = None        
         else:
             raise ValueError("Unrecognized iotype inputted.")
             
@@ -614,7 +621,8 @@ def acquire_randoms(filelist, n, l, datashape=None, iotype="stanford", savepath=
                 evttimes = evttimes[maxevts:]
                 res = res[maxevts:]
                 trigtypes = trigtypes[maxevts:]
-    
+
+#Added NW functionality
 def acquire_pulses(filelist, template, noisepsd, tracelength, thresh, nchan=2, trigtemplate=None, 
                    trigthresh=None, positivepulses=True, iotype="stanford", savepath=None, 
                    savename=None, dumpnum=1, maxevts=1000, lgcoverlap=True):
@@ -692,6 +700,11 @@ def acquire_pulses(filelist, template, noisepsd, tracelength, thresh, nchan=2, t
         
         if iotype=="stanford":
             traces, times, fs, trig = io.loadstanfordfile(f)
+            if trigtemplate is None:
+                trig = None
+        elif iotype=="northwestern":
+            traces, fs, trig = io.load_NW_file(f)
+            times = np.zeros(len(trig))
             if trigtemplate is None:
                 trig = None
         else:
