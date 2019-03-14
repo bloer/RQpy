@@ -1543,8 +1543,9 @@ def _calc_rq(traces, channels, det, setup, readout_inds=None):
             vals[setup.trigger], vals[0] = vals[0], vals[setup.trigger]
         
         for ii, (chan, d) in vals:
-            signal = traces[readout_inds, ii, setup.indstart:setup.indstop]
-            
+            signal = _lincomb_and_timeshift_row(traces[readout_inds, :, setup.indstart:setup.indstop],
+                                                ii, lincomb=None, indshifts=None)
+
             template = setup.templates[ii]
             psd = setup.psds[ii]
 
@@ -1767,7 +1768,7 @@ def _adv_roll(inarray, inds):
         outarray[..., ii, :] = np.roll(inarray[..., ii, :], int(ind), axis=-1)
     return outarray
 
-def _lincomb_and_timeshift(inarray, lincomb=None, indshifts=None):
+def _lincomb_and_timeshift_row(inarray, out_row, lincomb=None, indshifts=None):
     """
     Function for using manipulated an array given linear combination coefficients and/or time shift values.
 
@@ -1775,33 +1776,38 @@ def _lincomb_and_timeshift(inarray, lincomb=None, indshifts=None):
     ----------
     inarray : ndarray
         The input array to roll along the last axis.
+    out_row : int
+        The row that will be outputted after applying the transformations.
     lincomb : array_like, NoneType, optional
-        The matrix of linear combination coefficients that will be applied to the inarray. If None, then
-        no linear combination is done. If an array, this should have shape
-        `(inarray.shape[-2], inarray.shape[-2])`.
+        The vector of linear combination coefficients that will be applied to the inarray. If None, then
+        no linear combination is done. If an array, this should have shape `(inarray.shape[-2], )`.
     indshifts : array_like, NoneType, optional
-        The matrix of index shifts that should applied to each array. If None, then
-        no shifting is done. If an array, this should have shape `(inarray.shape[-2], inarray.shape[-2])`.
+        The vector of index shifts that should applied to each array. If None, then
+        no shifting is done. If an array, this should have shape `(inarray.shape[-2], )`.
         The diagonal of the array is the shifting for each row, while the off-diagonal components are
         only used if there are non-zero off-diagonal coefficients in the `lincomb` matrix.
 
     Returns
     -------
     outarray : ndarray
-        The outputted rolled/shifted array.
+        The outputted rolled/shifted row of `inarray`, where the row was specified by `out_row`.
 
     """
 
+    if np.all(indshifts == 0):
+        indshifts = None
+    if lincomb is not None and (
+        lincomb[out_row] == 1 and np.all(lincomb[[i for i in range(len(lincomb)) if i != out_row]])==0):
+        lincomb = None
+
     if lincomb is None and indshifts is None:
-        return inarray
+        return inarray[..., out_row, :]
     elif lincomb is not None and indshifts is None:
         outarray = np.matmul(lincomb, inarray)
     elif lincomb is None and indshifts is not None:
-        outarray = _adv_roll(inarray, indshifts)
+        outarray = _adv_roll(inarray, indshifts)[..., out_row, :]
     else:
-        outarray = np.empty_like(inarray)
-        for ii in range(inarray.shape[-2]):
-            rolled_array = adv_roll(inarray, indshifts[ii])
-            outarray[:, ii] = np.matmul(lincomb[ii], rolled_array)
+        rolled_array = _adv_roll(inarray, indshifts)
+        outarray = np.matmul(lincomb, rolled_array)
 
     return outarray
