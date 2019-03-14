@@ -47,6 +47,16 @@ class SetupRQ(object):
         The index at we should truncate the beginning of the traces up to when calculating RQs.
     indstop : int, NoneType
         The index at we should truncate the end of the traces up to when calculating RQs.
+    lincomb : ndarray, NoneType
+        To be used if the user wants individual channels to be processed as the linear combination of the
+        specific channels. Should be inputted as an array of shape `(nchan, nchan)`. If None, then
+        no linear combination is done.
+    lincomb_indshifts : ndarray, NoneType
+        To be used if the user wants to shift individual channels by a specific amount of bins when
+        processing specific channels. Should be inputted as an array of shape `(nchan, nchan)`. If None,
+        then no bin shifting is done. The diagonal of the array is the shifting for each row, while
+        the off-diagonal components are only used if there are non-zero off-diagonal coefficients in
+        the `lincomb` matrix. Units should be in bins.
     nchan : int
         The number of channels to be processed.
     do_ofamp_nodelay : list of bool
@@ -232,7 +242,7 @@ class SetupRQ(object):
     """
     
     def __init__(self, templates, psds, fs, summed_template=None, summed_psd=None, trigger=None,
-                 indstart=None, indstop=None):
+                 indstart=None, indstop=None, lincomb=None, lincomb_indshifts=None):
         """
         Initialization of the SetupRQ class.
         
@@ -262,11 +272,21 @@ class SetupRQ(object):
         indstop : int, NoneType, optional
             The index at we should truncate the end of the traces up to when calculating RQs. If left as 
             None, then we do not truncate the end of the trace. See `indstart`.
+        lincomb : ndarray, NoneType, optional
+            To be used if the user wants individual channels to be processed as the linear combination of the
+            specific channels. Should be inputted as an array of shape `(nchan, nchan)`. If None, then
+            no linear combination is done.
+        lincomb_indshifts : ndarray, NoneType, optional
+            To be used if the user wants to shift individual channels by a specific amount of bins when
+            processing specific channels. Should be inputted as an array of shape `(nchan, nchan)`. If None,
+            then no bin shifting is done. The diagonal of the array is the shifting for each row, while
+            the off-diagonal components are only used if there are non-zero off-diagonal coefficients in
+            the `lincomb` matrix. Units should be in bins.
         
         Raises
         ------
         ValueError
-            If `self.trigger` was set not be None, but is not an integer between zero and the number
+            If `self.trigger` was set to not be None, but is not an integer between zero and the number
             of channels - 1 (`self.nchan - 1`).
         
         """
@@ -291,10 +311,25 @@ class SetupRQ(object):
         self.indstart = indstart
         self.indstop = indstop
         
+        if lincomb is None:
+            lincomb = [None] * self.nchan
+        elif np.asarray(lincomb).shape != (self.nchan, self.nchan):
+            raise ValueError("lincomb must be either None "
+                             f"or a ({self.nchan}, {self.nchan}) shape array.")
+        
+        if lincomb_indshifts is None:
+            lincomb_indshifts = [None] * self.nchan
+        elif np.asarray(lincomb_indshifts).shape != (self.nchan, self.nchan):
+            raise ValueError("lincomb_indshifts must be either None "
+                             f"or a ({self.nchan}, {self.nchan}) shape array.")
+        
+        self.lincomb = lincomb
+        self.lincomb_indshifts = lincomb_indshifts
+        
         if self.indstart is not None and self.indstop is not None and (self.indstop - self.indstart != len(self.templates[0])):
-            raise ValueError("The indices specified indstart and indstop will result in each "+\
-                             "truncated trace having a different length than their corresponding "+\
-                             "psd and template. Make sure indstart-indstop = the length of the "+\
+            raise ValueError("The indices specified indstart and indstop will result in each "
+                             "truncated trace having a different length than their corresponding "
+                             "psd and template. Make sure indstart-indstop = the length of the "
                              "template/psd")
         
         self.summed_template = summed_template
@@ -306,12 +341,12 @@ class SetupRQ(object):
             raise ValueError("trigger must be either None, or an integer"+\
                              f" from zero to the number of channels - 1 ({self.nchan-1})")
             
-        self.calcchans=True
+        self.calcchans = True
         
         if summed_template is None or summed_psd is None:
-            self.calcsum=False
+            self.calcsum = False
         else:
-            self.calcsum=True
+            self.calcsum = True
         
         self.do_ofamp_nodelay = [True]*self.nchan
         self.do_ofamp_nodelay_smooth = [False]*self.nchan
@@ -1544,7 +1579,9 @@ def _calc_rq(traces, channels, det, setup, readout_inds=None):
         
         for ii, (chan, d) in vals:
             signal = _lincomb_and_timeshift_row(traces[readout_inds, :, setup.indstart:setup.indstop],
-                                                ii, lincomb=None, indshifts=None)
+                                                ii,
+                                                lincomb=setup.lincomb[ii],
+                                                indshifts=setup.lincomb_indshifts[ii])
 
             template = setup.templates[ii]
             psd = setup.psds[ii]
@@ -1793,16 +1830,17 @@ def _lincomb_and_timeshift_row(inarray, out_row, lincomb=None, indshifts=None):
         The outputted rolled/shifted row of `inarray`, where the row was specified by `out_row`.
 
     """
-
+    
     if np.all(indshifts == 0):
         indshifts = None
     if lincomb is not None and (
-        lincomb[out_row] == 1 and np.all(lincomb[[i for i in range(len(lincomb)) if i != out_row]])==0):
+        (lincomb[out_row] == 1) and np.all(lincomb[[i for i in range(len(lincomb)) if i != out_row]] == 0)):
         lincomb = None
 
     if lincomb is None and indshifts is None:
         return inarray[..., out_row, :]
-    elif lincomb is not None and indshifts is None:
+
+    if lincomb is not None and indshifts is None:
         outarray = np.matmul(lincomb, inarray)
     elif lincomb is None and indshifts is not None:
         outarray = _adv_roll(inarray, indshifts)[..., out_row, :]
