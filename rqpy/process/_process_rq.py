@@ -1743,3 +1743,65 @@ def rq(filelist, channels, setup, det="Z1", savepath='', lgcsavedumps=False, npr
     
     return rq_df
 
+def _adv_roll(inarray, inds):
+    """
+    Function for using `numpy.roll` with different shift values for different rows along
+    the same axis.
+
+    Parameters
+    ----------
+    inarray : ndarray
+        The input array to roll along the last axis.
+    inds : array_like
+        The list of indices that each row (in the second-to-last axis) will be rolled by.
+
+    Returns
+    -------
+    outarray : ndarray
+        The outputted rolled array.
+
+    """
+
+    outarray = np.empty_like(inarray)
+    for ii, ind in enumerate(inds):
+        outarray[..., ii, :] = np.roll(inarray[..., ii, :], int(ind), axis=-1)
+    return outarray
+
+def _lincomb_and_timeshift(inarray, lincomb=None, indshifts=None):
+    """
+    Function for using manipulated an array given linear combination coefficients and/or time shift values.
+
+    Parameters
+    ----------
+    inarray : ndarray
+        The input array to roll along the last axis.
+    lincomb : array_like, NoneType, optional
+        The matrix of linear combination coefficients that will be applied to the inarray. If None, then
+        no linear combination is done. If an array, this should have shape
+        `(inarray.shape[-2], inarray.shape[-2])`.
+    indshifts : array_like, NoneType, optional
+        The matrix of index shifts that should applied to each array. If None, then
+        no shifting is done. If an array, this should have shape `(inarray.shape[-2], inarray.shape[-2])`.
+        The diagonal of the array is the shifting for each row, while the off-diagonal components are
+        only used if there are non-zero off-diagonal coefficients in the `lincomb` matrix.
+
+    Returns
+    -------
+    outarray : ndarray
+        The outputted rolled/shifted array.
+
+    """
+
+    if lincomb is None and indshifts is None:
+        return inarray
+    elif lincomb is not None and indshifts is None:
+        outarray = np.matmul(lincomb, inarray)
+    elif lincomb is None and indshifts is not None:
+        outarray = _adv_roll(inarray, indshifts)
+    else:
+        outarray = np.empty_like(inarray)
+        for ii in range(inarray.shape[-2]):
+            rolled_array = adv_roll(inarray, indshifts[ii])
+            outarray[:, ii] = np.matmul(lincomb[ii], rolled_array)
+
+    return outarray
